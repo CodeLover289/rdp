@@ -53,22 +53,36 @@ jobs:
 
       - name: Install Tailscale
         run: |
-          # RESTORED: Direct binary download link for Tailscale installation package
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          
+          # Force sequential execution using start /wait to guarantee it writes to Program Files before proceeding
+          Start-Process cmd.exe -ArgumentList "/c start /wait msiexec.exe /i `"$installerPath`" /quiet /norestart" -NoNewWindow -Wait
+          
+          # Give the filesystem a moment to unlock the newly installed paths
+          Start-Sleep -Seconds 5
           Remove-Item $installerPath -Force
 
       - name: Establish Tailscale Connection
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          # Use explicit absolute pathing to completely bypass shell environment resolution bugs
+          $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+          
+          # Double-check file system presence before trying to run it
+          if (-not (Test-Path $tsExe)) {
+              Write-Error "Tailscale executable not found at expected path: $tsExe"
+              exit 1
+          }
+
+          # Bring up Tailscale with the provided auth key
+          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          
           # Wait for Tailscale to assign an IP
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              $tsIP = & $tsExe ip -4
               Start-Sleep -Seconds 5
               $retries++
           }
