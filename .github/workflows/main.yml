@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Configure Core RDP Settings
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
@@ -19,10 +19,10 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
 
-          # Completely disable all firewall profiles to prevent accidental lockouts during network updates
+          # Completely disable all firewall profiles to prevent lockouts during network or rule changes
           Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
 
-          # Restart the Remote Desktop service to ensure changes take effect
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
 
       - name: Create RDP User with Secure Password
@@ -55,60 +55,23 @@ jobs:
 
       - name: Install Tailscale
         run: |
-          $tsUrl = "https://tailscale.com"
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
           
-          Write-Host "Downloading Tailscale..."
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          
-          Write-Host "Running MSI Installer..."
-          $process = Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -PassThru -Wait
-          
-          # Force a 15-second buffer sleep to let the Windows service fully register
-          Start-Sleep -Seconds 15
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
       - name: Establish Tailscale Connection
         run: |
-          # Look for the executable across both common path mutations
-          $possiblePaths = @(
-              "$env:ProgramFiles\Tailscale\tailscale.exe",
-              "$env:ProgramFiles\Tailscale IPN\tailscale.exe"
-          )
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
-          $tsExe = $null
-          
-          # Loop check (up to 60 seconds) waiting for Windows background installation to finish writing files
-          $timeout = 0
-          while (-not $tsExe -and $timeout -lt 12) {
-              foreach ($path in $possiblePaths) {
-                  if (Test-Path $path) {
-                      $tsExe = $path
-                      break
-                  }
-              }
-              if (-not $tsExe) {
-                  Write-Host "Waiting for Tailscale installation files to write to disk..."
-                  Start-Sleep -Seconds 5
-                  $timeout++
-              }
-          }
-          
-          if (-not $tsExe) {
-              Write-Error "Tailscale executable was not found anywhere on disk after install."
-              exit 1
-          }
-          
-          Write-Host "Tailscale executable verified at: $tsExe"
-          
-          # Bring up Tailscale tunnel using the verified runtime path
-          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP network address
+          # Wait for Tailscale to assign an IP
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & $tsExe ip -4
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
               Start-Sleep -Seconds 5
               $retries++
           }
